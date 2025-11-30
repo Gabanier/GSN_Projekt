@@ -18,7 +18,7 @@ def sequential_from_descriptor(file_path):
     model_layers = OrderedDict()
 
     layer_counter = {
-        "Linear": 0, "ReLU": 0
+        "Linear": 0, "ReLU": 0, "GELU": 0, "SiLU": 0
     }
     for module in architecture:
         layer = module["layer"]
@@ -34,6 +34,12 @@ def sequential_from_descriptor(file_path):
                                      dtype=layer.get("dtype",None))
         elif type == "ReLU":
             layer_to_add = nn.ReLU(inplace=layer.get("inplace",False))
+
+        elif type == "SiLU":
+            layer_to_add = nn.SiLU(inplace=layer.get("inplace",False))
+
+        elif type == "GELU":
+            layer_to_add = nn.GELU(approximate=layer.get("approximate",'none'))
 
         if layer_to_add:
             model_layers[f"{type}_{layer_counter[type]}"] = layer_to_add
