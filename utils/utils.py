@@ -51,7 +51,7 @@ def sequential_from_descriptor(file_path):
 
 
 if __name__ == "__main__":
-    file_path:str = "./pinn/pinn_model.yaml"
+    file_path:str = "./config/pinc_model.yaml"
     layers = sequential_from_descriptor(file_path=file_path)
     print(layers)
     
