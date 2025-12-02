@@ -42,7 +42,6 @@ class PendulumDataset(Dataset):
             return None
         
     
-
 class RWPDataModule(L.LightningDataModule):
     def __init__(self,data_path:dict[str,Union[str, Path]],states:int, 
                  random_noise:Optional[Dict[str,float]]=None,
