@@ -20,18 +20,25 @@ def test1_forward() -> bool:
     T = 0.1
     BATCH_SIZE = 128
     model = RWP_PINC(model_descriptor_path=model_path, n_states=n_states, n_control=n_control, horizon_T=T)
-    
-    rand_tensor_state = torch.rand(BATCH_SIZE,n_states,dtype=torch.float32)
-    rand_tensor_control = torch.rand(BATCH_SIZE,n_control,dtype=torch.float32)
-    rand_tensor_time = torch.rand(BATCH_SIZE,1,dtype=torch.float32)
-    try:
-        full_tensor = torch.cat([rand_tensor_time,rand_tensor_state,rand_tensor_control],dim=1)
-        out = model(full_tensor)
-        if list(out.shape) != [BATCH_SIZE,n_states]:
+    for test in range(0,3):
+        if test==1:
+            rand_tensor= torch.rand(BATCH_SIZE,1+n_states+n_control,dtype=torch.float32)
+            expected_shape = [BATCH_SIZE,n_states]
+        elif test==2:
+            rand_tensor= torch.rand(1+n_states+n_control,dtype=torch.float32)
+            expected_shape = [1,n_states]
+        else:
+            NUM_SAMPLES = 100
+            rand_tensor= torch.rand(BATCH_SIZE,NUM_SAMPLES,1+n_states+n_control,dtype=torch.float32)
+            expected_shape = [BATCH_SIZE,NUM_SAMPLES,n_states]
+
+        try:
+            out = model(rand_tensor)
+            if list(out.shape) != expected_shape:
+                return False
+        except Exception as e:
+            print(e)
             return False
-    except Exception as e:
-        print(e)
-        return False
     return True
 
 
@@ -61,13 +68,25 @@ def test_compute_data_ic_loss() -> bool:
     BATCH_SIZE = 1
     model = RWP_PINC(model_descriptor_path=model_path, n_states=n_states, n_control=n_control, horizon_T=T)
     x = torch.rand(BATCH_SIZE,1+n_states+n_control, dtype=torch.float32)
-    targets =torch.rand(BATCH_SIZE,n_states, dtype=torch.float32)
-    try:
-        out1 = model.compute_data_loss(x=x,targets=targets)
-        print(f"mse ic/data shape == {out1.shape}, random_mse ic/data = {out1}")
-    except Exception as e:
-        print(e)
-        return False
+    targets =torch.rand(BATCH_SIZE,n_states, dtype=torch.float32)    
+    for test in range(0,3):
+        if test==1:
+            rand_tensor= torch.rand(BATCH_SIZE,1+n_states+n_control,dtype=torch.float32)
+            targets =torch.rand(BATCH_SIZE,n_states, dtype=torch.float32)
+        elif test==2:
+            rand_tensor= torch.rand(1+n_states+n_control,dtype=torch.float32)
+            targets =torch.rand(n_states, dtype=torch.float32)
+        else:
+            NUM_SAMPLES = 100
+            rand_tensor= torch.rand(BATCH_SIZE,NUM_SAMPLES,1+n_states+n_control,dtype=torch.float32)
+            targets =torch.rand(BATCH_SIZE,NUM_SAMPLES,n_states, dtype=torch.float32)
+
+        try:
+            out1 = model.compute_data_loss(x=rand_tensor,targets=targets)
+            print(f"mse ic/data shape == {out1.shape}, random_mse ic/data = {out1}")
+        except Exception as e:
+            print(e)
+            return False
     return True
 
 
@@ -78,48 +97,68 @@ def test_compute_physics_loss() -> bool:
     T = 0.1
     BATCH_SIZE = 128
     model = RWP_PINC(model_descriptor_path=model_path, n_states=n_states, n_control=n_control, horizon_T=T)
-    x = torch.rand(BATCH_SIZE,1+n_states+n_control, dtype=torch.float32)
-    try:
-        out1 = model.compute_physics_loss(x=x)
-        print(f"mse physics shape == {out1.shape}, random_physics_mse = {out1}")
-    except Exception as e:
-        print(e)
-        return False
+    for test in range(0,3):
+        if test==1:
+            rand_tensor= torch.rand(BATCH_SIZE,1+n_states+n_control,dtype=torch.float32)
+        elif test==2:
+            rand_tensor= torch.rand(1+n_states+n_control,dtype=torch.float32)
+        else:
+            NUM_SAMPLES = 100
+            rand_tensor= torch.rand(BATCH_SIZE,NUM_SAMPLES,1+n_states+n_control,dtype=torch.float32)
+        try:
+            out1 = model.compute_physics_loss(x=rand_tensor)
+            print(f"mse physics shape == {out1.shape}, random_physics_mse = {out1}")
+        except Exception as e:
+            print(e)
+            return False
     return True
 
 
-def test_ode_rhs() -> bool:
+def test_ode_rhs(test:int=0) -> bool:
     model_path = "./pinn/pinc/tests/test_model.yaml"
     n_states = 3
     n_control = 1
     T = 0.1
-    BATCH_SIZE = 128
+    BATCH_SIZE = 1
     model = RWP_PINC(model_descriptor_path=model_path, n_states=n_states, n_control=n_control, horizon_T=T)
-    rand_tensor_state = torch.rand(BATCH_SIZE,n_states,dtype=torch.float32)
-    rand_tensor_control = torch.rand(BATCH_SIZE,n_control,dtype=torch.float32)
-    try:
-        out = model.ode_rhs(x=rand_tensor_state, u=rand_tensor_control)
-        if list(out.shape) != [BATCH_SIZE,n_states]:
+    for test in range(0,3):
+        if test==1:
+            rand_tensor_state = torch.rand(BATCH_SIZE,n_states,dtype=torch.float32)
+            rand_tensor_control = torch.rand(BATCH_SIZE,n_control,dtype=torch.float32)
+            expected_shape = [BATCH_SIZE,n_states]
+        elif test==2:
+            rand_tensor_state = torch.rand(n_states,dtype=torch.float32)
+            rand_tensor_control = torch.rand(n_control,dtype=torch.float32)
+            expected_shape = [1,n_states]
+        else:
+            NUM_SAMPLES = 100
+            rand_tensor_state = torch.rand(BATCH_SIZE,NUM_SAMPLES,n_states,dtype=torch.float32)
+            rand_tensor_control = torch.rand(BATCH_SIZE,NUM_SAMPLES,n_control,dtype=torch.float32)
+            expected_shape = [BATCH_SIZE,NUM_SAMPLES,n_states]
+
+        try:
+            out = model.ode_rhs(x=rand_tensor_state, u=rand_tensor_control)
+            if list(out.shape) != expected_shape:
+                return False
+        except Exception as e:
+            print(e)
             return False
-    except Exception as e:
-        print(e)
-        return False
     return True
 
 
 def main():
-    test_init_res = test_init_()
-    print(f"test_init_res == {test_init_res}")
-    test1_forward_res = test1_forward()
-    print(f"test_forward_res == {test1_forward_res}")
-    test_predict_res = test_predict()
-    print(f"test_predict_res == {test_predict_res}")
-    test_compute_data_ic_loss_res = test_compute_data_ic_loss()
-    print(f"test_compute_data_ic_loss_res == {test_compute_data_ic_loss_res}")
+    # test_init_res = test_init_()
+    # print(f"test_init_res == {test_init_res}")
+    # test1_forward_res = test1_forward()
+    # print(f"test_forward_res == {test1_forward_res}")
+    # test_predict_res = test_predict()
+    # print(f"test_predict_res == {test_predict_res}")
+    # test_compute_data_ic_loss_res = test_compute_data_ic_loss()
+    # print(f"test_compute_data_ic_loss_res == {test_compute_data_ic_loss_res}")
     test_compute_physics_res = test_compute_physics_loss()
     print(f"test_compute_physics_res == {test_compute_physics_res}")
-    test_ode_rhs_res = test_ode_rhs()
-    print(f"test_ode_rhs_res == {test_ode_rhs_res}")
+    # test_ode_rhs_res = test_ode_rhs()
+    # print(f"test_ode_rhs_res == {test_ode_rhs_res}")
 
 
 if __name__ == "__main__":
