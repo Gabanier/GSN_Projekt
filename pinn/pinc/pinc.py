@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import lightning as L
-from typing import Any, Union, Optional
+from typing import Any, Union, Optional, Tuple
 from utils.utils import sequential_from_descriptor
 from pathlib import Path
 
@@ -12,7 +12,7 @@ class PINC(nn.Module):
                  horizon_T: float,
                  lambda_ic:float=1,
                  lambda_physics:float=1e-3,
-                 lambda_data:float=0.):
+                 lambda_data:float=0.) -> None:
         super().__init__()
 
         self.n_states:int = n_states
@@ -22,7 +22,7 @@ class PINC(nn.Module):
         self.lambda_physics:float = lambda_physics
         self.lambda_data:float = lambda_data
     
-    def forward(self, x: torch.Tensor):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: (batch_size, (t, y(0){1,..,k},u{1,..,j}) ) where
         # t            - time in range [0,T]
         # y(0){1,..,k} - initial conditions of the system
@@ -36,7 +36,7 @@ class PINC(nn.Module):
         # u: (batch_size, n_control) - control inputs
         raise NotImplementedError("Each subclass of PINC should implement their own rhs odes")
     
-    def compute_physics_loss(self, x: torch.Tensor) :
+    def compute_physics_loss(self, x: torch.Tensor) -> torch.Tensor:
         # Computes the physics-informed loss for collocation points.
         # x: (batch_size, (t, y(0){1,..,k}, u{1,..,j}) )
         if x.ndim == 1:
@@ -67,7 +67,7 @@ class PINC(nn.Module):
         mse_f = ((dy_dt - f) ** 2).mean()
         return mse_f
 
-    def compute_data_loss(self, x: torch.Tensor, targets: torch.Tensor):
+    def compute_data_loss(self, x: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         # Can compute both IC and target data loss.
         # x: (batch_size, (t, y(0){1,..,k}, u{1,..,j}) )
         # Labels are either
@@ -84,7 +84,7 @@ class PINC(nn.Module):
                            x_train: torch.Tensor, 
                            targets_ic: torch.Tensor,
                            x_data: Optional[torch.Tensor] = None,
-                           targets_data: Optional[torch.Tensor] = None):
+                           targets_data: Optional[torch.Tensor] = None) ->Tuple[torch.Tensor,Tuple[torch.Tensor,torch.Tensor,Optional[torch.Tensor]]]:
        
         loss_physics = self.lambda_physics*self.compute_physics_loss(x_coll)
         loss_ic = self.lambda_ic*self.compute_data_loss(x=x_train, targets=targets_ic)
@@ -94,7 +94,7 @@ class PINC(nn.Module):
             loss_data = torch.zeros_like(loss_physics)
         return (loss_physics + loss_ic + loss_data, (loss_physics, loss_ic, loss_data))
 
-    def predict(self, state: torch.Tensor, control: torch.Tensor):
+    def predict(self, state: torch.Tensor, control: torch.Tensor) -> torch.Tensor:
         # Predict the next state y[k] = ffn(T,y[k-1], u[k])
         # which can be rewritten as y[l] = ffn(y[k-1],u[k])
         # state: (n_states,) or (1, n_states) current state y[k-1]
@@ -112,7 +112,12 @@ class PINC(nn.Module):
 
 class RWP_PINC(PINC):
     def __init__(self, model_descriptor_path:Union[str,Path],
-                 n_states: int, n_control: int, horizon_T: float, lambda_ic: float = 1, lambda_physics: float = 0.001, lambda_data: float = 0):
+                 n_states: int,
+                 n_control: int,
+                 horizon_T: float,
+                 lambda_ic: float = 1,
+                 lambda_physics: float = 0.001, 
+                 lambda_data: float = 0) -> None:
         super().__init__(n_states, n_control, horizon_T, lambda_ic, lambda_physics, lambda_data)
         self.backbone = sequential_from_descriptor(model_descriptor_path)
         self.k_t   = 0.027        #% stała momentu silnika [Nm/A]
@@ -138,7 +143,7 @@ class RWP_PINC(PINC):
         md  = 0.01218               #% masa wahadła * odległość [kg*m]
         self.G   = md * 9.81      #% siła ciężkości [N]
 
-    def forward(self, x: torch.Tensor):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.backbone(x)
 
     def ode_rhs(self, x: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
