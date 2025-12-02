@@ -17,7 +17,7 @@ class PINC(nn.Module):
 
         self.n_states:int = n_states
         self.n_control:int = n_control
-        self.horizon_T:torch.Tensor = torch.tensor(horizon_T,dtype=torch.float16,requires_grad=False).view(1,-1)
+        self.horizon_T:torch.Tensor = torch.tensor(horizon_T,dtype=torch.float16,requires_grad=False).view(-1)
         self.lambda_ic:float = lambda_ic
         self.lambda_physics:float = lambda_physics
         self.lambda_data:float = lambda_data
@@ -36,29 +36,34 @@ class PINC(nn.Module):
         # u: (batch_size, n_control) - control inputs
         raise NotImplementedError("Each subclass of PINC should implement their own rhs odes")
     
-    def compute_physics_loss(self, x: torch.Tensor) -> torch.Tensor:
+    def compute_physics_loss(self, x: torch.Tensor) :
         # Computes the physics-informed loss for collocation points.
         # x: (batch_size, (t, y(0){1,..,k}, u{1,..,j}) )
-        t = x[:, 0].clone().requires_grad_(True)  # (batch_size, 1)
-        y0 = x[:, 1:1 + self.n_states]  # (batch_size, n_states)
-        u = x[:, 1 + self.n_states:]  # (batch_size, n_control)
+        if x.ndim == 1:
+            t = x[0].clone().view(1,-1).requires_grad_(True) # (1, 1)
+            y0 = x[1:1 + self.n_states].view(1,-1)  # (1, n_states)
+            u = x[1 + self.n_states:].view(1,-1)  # (1, n_control)
+        else:
+            t = x[:, 0].clone().requires_grad_(True).view(-1,1)  # (batch_size, 1)
+            y0 = x[:, 1:1 + self.n_states]  # (batch_size, n_states)
+            u = x[:, 1 + self.n_states:]  # (batch_size, n_control)
 
-        y = self(x)  # (batch_size, n_states)
-
+        x_input = torch.cat([t, y0, u], dim=1)
+        y = self(x_input)  # (batch_size, n_states)
+        
         # Compute dy/dt
         dy_dt = torch.zeros_like(y)
         for i in range(self.n_states):
             grad_outputs = torch.zeros_like(y)
             grad_outputs[:, i] = 1.0
             dy_i_dt = torch.autograd.grad(
-                y[:, i], t, grad_outputs=grad_outputs[:, i:i+1],
+                y[:, i], t, grad_outputs=grad_outputs[:, i:i+1].view(-1),
                 create_graph=True
             )[0]
             dy_dt[:, i:i+1] = dy_i_dt
 
         # Compute the RHS 
-        f = self.ode_rhs(y0, u)
-
+        f = self.ode_rhs(y, u)
         mse_f = ((dy_dt - f) ** 2).mean()
         return mse_f
 
@@ -96,11 +101,11 @@ class PINC(nn.Module):
         # control: (n_control,) or (1, n_control) control input u[k]
         # Returns: (n_states) predicted next state
         
-        state = state.view(1,-1)                  #reshape to [1,n_states]
-        control = control.view(1,-1)              #reshape to [1,n_control]
-        t       = self.horizon_T.to(state.device) #send T to device [1,1]
+        state = state.squeeze(0)                 #reshape to [n_states,]
+        control = control.squeeze(0)                #reshape to [n_control,]
+        # t       = self.horizon_T.to(state.device) #send T to device [1,1]
         
-        x = torch.cat((t, state, control), dim=1)
+        x = torch.cat([self.horizon_T.to(state.device),state,control])
         with torch.no_grad():
             return self(x).squeeze(0)
 
@@ -151,7 +156,6 @@ class RWP_PINC(PINC):
                 - self.b_2 * torch.tanh(self.k_p * x_2) 
                 - self.b_5 * tau_m) / self.J_p
         dx_3 = tau_m / self.J_r
-        print(dx_1.shape,dx_2.shape,dx_3.shape)
         return torch.cat([dx_1,dx_2,dx_3],dim=1)
 
 
@@ -178,22 +182,3 @@ class LightningPINC(L.LightningModule):
     
     def configure_optimizers(self):
         return super().configure_optimizers()
-
-
-def main():
-    model_path = "./config/pinc_model.yaml"
-    model = RWP_PINC(model_descriptor_path=model_path,n_states=3,n_control=1,horizon_T=0.05)
-    model.to("cuda")
-    rand_tensor_state = torch.rand(1,3,dtype=torch.float32).to("cuda")
-    rand_tensor_control = torch.rand(1,1,dtype=torch.float32).to("cuda")
-    prediction = model.predict(state=rand_tensor_state, control=rand_tensor_control)
-    print(prediction.shape)
-    rand_tensor_state = torch.rand(32,3,dtype=torch.float32).to("cuda")
-    rand_tensor_control = torch.rand(32,1,dtype=torch.float32).to("cuda")
-    dx = model.ode_rhs(x=rand_tensor_state, u=rand_tensor_control)
-    print(dx.shape)
-
-
-
-if __name__ == "__main__":
-    main()
