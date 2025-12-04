@@ -1,5 +1,5 @@
 model:
-  name: PINC
+  name: TEST_PINC
   architecture:
     - layer:
         type: Linear

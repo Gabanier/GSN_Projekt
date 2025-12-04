@@ -1,1 +1,6 @@
 ref
+**/__pycache__/
+logs/**
+lightning_logs
+wandb
+wandb/**
