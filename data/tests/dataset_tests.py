@@ -503,10 +503,10 @@ def test_PINNDataModule():
     print(f"test_PINNDataModule_dataloaders() = {test_PINNDataModule_dataloaders()}")
 
 if __name__ == "__main__":
-    # test_ExperimentData()
-    # print()
-    # test_InitialCondtionsDataset()
-    # print()
-    # test_CollocationPointsDataset()
+    test_ExperimentData()
+    print()
+    test_InitialCondtionsDataset()
+    print()
+    test_CollocationPointsDataset()
     print()
     test_PINNDataModule()

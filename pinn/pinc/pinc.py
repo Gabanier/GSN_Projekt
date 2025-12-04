@@ -1,35 +1,35 @@
 import torch
 import torch.nn as nn
-import lightning as L
+import numpy as np
+import lightning as pl
 from typing import Any, Union, Optional, Tuple
 from utils.utils import sequential_from_descriptor
 from pathlib import Path
 from math import pi as PI
+from data.dataset import StateRange
 
 class PINC(nn.Module):
     def __init__(self,
                  n_states: int,
                  n_control: int, 
                  horizon_T: float,
-                 lambda_ic:float=1,
-                 lambda_physics:float=1e-3,
-                 lambda_data:float=0.) -> None:
+                 state_boundaries: StateRange,
+                 control_boundaries: StateRange,
+                 ) -> None:
         super().__init__()
 
         self.n_states:int = n_states
         self.n_control:int = n_control
         self.horizon_T:torch.Tensor = torch.tensor(horizon_T,dtype=torch.float16,requires_grad=False).view(-1)
-        self.lambda_ic:float = lambda_ic
-        self.lambda_physics:float = lambda_physics
-        self.lambda_data:float = lambda_data
-    
+        self.state_boundaries = state_boundaries
+        self.control_boundaries = control_boundaries
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: (batch_size, (t, y(0){1,..,k},u{1,..,j}) ) where
         # t            - time in range [0,T]
         # y(0){1,..,k} - initial conditions of the system
         # u{1,..,j}    - constant control signal 
         raise NotImplementedError("Each subclass of PINC should implement their own forward pass")
-    
     
     def ode_rhs(self, x: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
         # Subclass and implement the right-hand side of the ODE: dx/dt = f(x, u)
@@ -48,7 +48,9 @@ class PINC(nn.Module):
 
         x_input = torch.cat([t, y0, u], dim=1)
         y = self(x_input)  # (batch_size, n_states)
-        
+        y = PINC.denormalize(y, self.state_boundaries)
+        u = PINC.denormalize(u, self.control_boundaries)
+
         # Compute dy/dt
         dy_dt = torch.zeros_like(y)
         for i in range(self.n_states):
@@ -76,23 +78,10 @@ class PINC(nn.Module):
         # to compute the DATA loss.
         # Points can also be extended by num samples -> (batch_size, num_samples, point size)
         x, _ = PINC.flatten_points(x)
+        targets, _ = PINC.flatten_points(targets)
         y = self(x) 
         mse_y = ((y - targets) ** 2).mean()
         return mse_y
-    
-    def compute_total_loss(self, x_coll: torch.Tensor, 
-                           x_train: torch.Tensor, 
-                           targets_ic: torch.Tensor,
-                           x_data: Optional[torch.Tensor] = None,
-                           targets_data: Optional[torch.Tensor] = None) ->Tuple[torch.Tensor,Tuple[torch.Tensor,torch.Tensor,Optional[torch.Tensor]]]:
-       
-        loss_physics = self.lambda_physics*self.compute_physics_loss(x_coll)
-        loss_ic = self.lambda_ic*self.compute_data_loss(x=x_train, targets=targets_ic)
-        if x_data is not None and targets_data is not None:
-            loss_data = self.lambda_data*self.compute_data_loss(x_data, targets_data)
-        else:
-            loss_data = torch.zeros_like(loss_physics)
-        return (loss_physics + loss_ic + loss_data, (loss_physics, loss_ic, loss_data))
 
     def predict(self, state: torch.Tensor, control: torch.Tensor) -> torch.Tensor:
         # Predict the next state y[k] = ffn(T,y[k-1], u[k])
@@ -121,18 +110,56 @@ class PINC(nn.Module):
             return x.unsqueeze(0), 1
         else:
             raise Exception("Incorrect tensor shape")
+        
+    @staticmethod
+    def normalize(data: torch.Tensor,
+                state_boundaries: StateRange
+                ) -> torch.Tensor:
+        data_shape = data.shape
+        if len(data_shape) == 1:
+            data = data.unsqueeze(0)        # (1, N)
+        elif len(data_shape) > 2:
+            raise Exception("Function allows only for arrays with 1 or 2 axis")
+        
+        nrng: Tuple[float, float] = (-1.0, 1.0)
+        n_states = len(state_boundaries)
 
+        for i in range(n_states):
+            data_min = state_boundaries[i][0]
+            data_max = state_boundaries[i][1]
+            data[:, i] = nrng[0] + (nrng[1] - nrng[0]) * (data[:, i] - data_min) / (data_max - data_min + 1e-12)
+
+        return data
+
+    @staticmethod
+    def denormalize(data: torch.Tensor,
+                    state_boundaries: StateRange,
+                    ) -> torch.Tensor:
+        data_shape = data.shape
+        if len(data_shape) == 1:
+            data = data.unsqueeze(0)
+        elif len(data_shape) > 2:
+            raise Exception("Function allows only for arrays with 1 or 2 axis")
+        
+        nrng: Tuple[float, float] = (-1.0, 1.0)
+        n_states = len(state_boundaries)
+        
+        for i in range(n_states):
+            data_min = state_boundaries[i][0]
+            data_max = state_boundaries[i][1]
+            data[:, i] = data_min + (data[:,  i] - nrng[0]) * (data_max - data_min) / (nrng[1] - nrng[0] + 1e-12)
+        
+        return data
 
 class RWP_PINC(PINC):
     def __init__(self, model_descriptor_path:Union[str,Path],
                  n_states: int,
                  n_control: int,
                  horizon_T: float,
-                 lambda_ic: float = 1,
-                 lambda_physics: float = 0.001, 
-                 lambda_data: float = 0,
-                 scale_factors:Tuple[float,...] = (PI,4.0,200.0)) -> None:
-        super().__init__(n_states, n_control, horizon_T, lambda_ic, lambda_physics, lambda_data)
+                 state_boundaries:StateRange = ((-PI,PI),(-4,4),(-200,200)),
+                 control_boundaries: StateRange = ((-0.5, 0.5),),
+                 ) -> None:
+        super().__init__(n_states, n_control, horizon_T, state_boundaries, control_boundaries)
         self.backbone = sequential_from_descriptor(model_descriptor_path)
         self.k_t   = 0.027        #% stała momentu silnika [Nm/A]
         self.k_emf = self.k_t     #% stała SEM [Vs/rad]
@@ -158,15 +185,18 @@ class RWP_PINC(PINC):
         self.G   = md * 9.81      #% siła ciężkości [N]
 
         #scale factors
-        self.x1_sf:float = scale_factors[0]
-        self.x2_sf:float = scale_factors[1]
-        self.x3_sf:float = scale_factors[2]
+        self.state_boundaries = state_boundaries
+        self.control_boundaries = control_boundaries
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x, B = RWP_PINC.flatten_points(x) # handle the 3 distinct cases
         return self.backbone(x).view(B,-1,self.n_states).squeeze(dim=1) # -> (B*N,P) or (B,P) or (1,P)
 
     def ode_rhs(self, x: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
+        ## Shoud be in the proper state ranges
+        ## x1 = (-pi,pi)
+        ## x2 = (-4,4)
+        ## x3 = (-200,200)
         x,B = RWP_PINC.flatten_points(x)
         u,_ = RWP_PINC.flatten_points(u)
 
@@ -184,29 +214,128 @@ class RWP_PINC(PINC):
                 - self.b_2 * torch.tanh(self.k_p * x_2) 
                 - self.b_5 * tau_m) / self.J_p
         dx_3 = tau_m / self.J_r
-        return torch.cat([dx_1/self.x1_sf,dx_2/self.x2_sf,dx_3/self.x3_sf],dim=1).view(B,-1,self.n_states).squeeze(dim=1)
+
+        dx = torch.cat([dx_1,dx_2,dx_3],dim=1).view(B,-1,self.n_states).squeeze(dim=1)
+        return dx
 
 
-#TODO
-class LightningPINC(L.LightningModule):
+class RWP_PINC_PL(pl.LightningModule):
     """
-    PyTorch Lightning module for training PINN on Pendulum data.
+    PyTorch Lightning module for training RWP_PINC
     """ 
-    def __init__(self) -> None:
+    def __init__(self,
+                 model_descriptor_path:Union[str,Path],
+                 n_states: int,
+                 n_control: int,
+                 horizon_T: float,
+                 state_boundaries:StateRange = ((-PI,PI),(-4,4),(-200,200)),
+                 control_boundaries: StateRange = ((-0.5, 0.5),),
+                 lambda_ic: float = 1,
+                 lambda_physics: float = 0.001, 
+                 lambda_data: float = 0,
+                 scale_factors:Tuple[float,...] = (PI,4.0,200.0),
+                 lr: float = 1e-3, 
+                 weight_decay: float = 1e-5
+                 ) -> None:
         super().__init__()
         self.save_hyperparameters()
-    
-    def step(self, batch):
-        pass
+        self.n_control = n_control
+        self.n_states = n_states
+        self.horizon_T = horizon_T
+        self.lambda_ic = lambda_ic
+        self.lambda_physics = lambda_physics
+        self.lambda_data = lambda_data
+        self.scale_factors = scale_factors
+        
+        # -- Model -_-
+        self.model = RWP_PINC(model_descriptor_path=model_descriptor_path,
+                              n_states=n_states,
+                              n_control=n_control,
+                              horizon_T=horizon_T,
+                              state_boundaries=state_boundaries,
+                              control_boundaries=control_boundaries)
+        
+        self.state_boundaries = state_boundaries
+        self.control_boundaries = control_boundaries
 
-    def training_step(self, *args: Any, **kwargs: Any):
-        return super().training_step(*args, **kwargs)
+        # --- Optimizer params ---
+        self.lr = lr
+        self.weight_decay = weight_decay
+
+        # --- Metrics ---
+        # Already included in the base PINC class
+
+    def training_step(self, batches, batch_idx):
+        # print(batch)
+        # print(len(batch), len(batch[0]))
+        loss_physics:Optional[torch.Tensor] = None
+        loss_ic:Optional[torch.Tensor] = None
+        loss_data:Optional[torch.Tensor] = None
+        loss = torch.tensor(0.0, device=self.device)
+        for batch in batches:
+            # print(batch.keys())
+            x = batch['x']
+            batch_type = batch['type'][0]
+
+            if batch_type == 'Collocation':
+                loss_physics = self.lambda_physics * self.model.compute_physics_loss(x)
+                self.log('train_loss_physics', loss_physics)
+            elif batch_type == 'IC':
+                targets = batch['targets']
+                loss_ic = self.lambda_ic * self.model.compute_data_loss(x=x, targets=targets)
+                self.log('train_loss_ic', loss_ic)
+            elif batch_type == "ExperimentData":
+                targets = batch['targets']
+                loss_data = self.lambda_data * self.model.compute_data_loss(x=x, targets=targets)
+                self.log('train_loss_exp', loss_data)
+            else:
+                raise Exception(f"Train-Step: Unknown batch type\nCorrect = [Collocation, IC, ExperimentData]\nGot {batch_type}")
+
+        # Global loss accumulation
+        if loss_data is None:
+            raise Exception()
+        if loss_ic is None:
+            raise Exception()
+        if loss_physics is None:
+            raise Exception()
+        
+        loss += loss_data + loss_ic + loss_physics
+        self.log('train_loss', loss)
+        return loss
     
-    def validation_step(self, *args: Any, **kwargs: Any):
-        return super().validation_step(*args, **kwargs)
+    def validation_step(self, batch, batch_idx):
+        ## TODO actual validation implementation
+        ## of the discrete time step inference
+        x = batch['x']
+        batch_type = batch['type'][0]
+        targets = batch['targets']
+        loss = torch.tensor(0.0, device=self.device)
+        if batch_type == "ExperimentData":
+            loss = self.model.compute_data_loss(x=x, targets=targets)
+        else:
+            raise Exception(f"Valid-Step: Unknown batch type\nCorrect = [ExperimentData]\nGot {batch_type}")
+
+        self.log('valid_loss', loss)
+        return loss
     
-    def test_step(self, *args: Any, **kwargs: Any):
-        return super().test_step(*args, **kwargs)
+    def test_step(self, batch, batch_idx):
+        ## TODO actual test implementation
+        ## of the discrete time step inference
+        x = batch['x']
+        batch_type = batch['type'][0]
+        targets = batch['targets']
+        loss = torch.tensor(0.0, device=self.device)
+        if batch_type == "ExperimentData":
+            loss = self.model.compute_data_loss(x=x, targets=targets)
+        else:
+            raise Exception(f"Test-Step: Unknown batch type\nCorrect = [ExperimentData]\nGot {batch_type}")
+
+        self.log('test_loss', loss)
+        return loss
     
     def configure_optimizers(self):
-        return super().configure_optimizers()
+        return torch.optim.Adam(
+            self.model.parameters(),
+            lr=self.lr,
+            weight_decay=self.weight_decay,
+        )

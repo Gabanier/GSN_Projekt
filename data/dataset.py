@@ -1,7 +1,7 @@
 import torch.nn as nn
 import torch.cuda
 from torch.autograd import grad
-import lightning as L
+import lightning as pl
 from typing import Any, Tuple, Union, Optional, Dict, Mapping, List
 from torch.utils.data import Dataset, DataLoader, ConcatDataset, default_collate
 import h5py
@@ -27,7 +27,8 @@ class InitialCondtionsDataset(Dataset):
                  n_states:int=3, 
                  n_control:int=1,
                  horizon_T:float=0.5,
-                 pre_generate:bool=True) -> None:
+                 pre_generate:bool=True,
+                 normalized:bool=True) -> None:
         super().__init__()
 
         self.n_states:int = n_states
@@ -37,14 +38,22 @@ class InitialCondtionsDataset(Dataset):
         self.horizon_T:float = horizon_T
         self.state_range:np.ndarray = np.zeros((self.n_states,2),dtype=np.float32)
         self.control_range:np.ndarray = np.zeros((self.n_control,2),dtype=np.float32)
-        for state in range(0,self.state_range.shape[0]):
-            state_ranges = state_boundaries[state]
-            self.state_range[state][0] = state_ranges[0]
-            self.state_range[state][1] = state_ranges[1]
-        for control in range(0,self.control_range.shape[0]):
-            control_ranges = control_boundaries[control]
-            self.control_range[control][0] = control_ranges[0]
-            self.control_range[control][1] = control_ranges[1]
+        if not normalized:
+            for state in range(0,self.state_range.shape[0]):
+                state_ranges = state_boundaries[state]
+                self.state_range[state][0] = state_ranges[0]
+                self.state_range[state][1] = state_ranges[1]
+            for control in range(0,self.control_range.shape[0]):
+                control_ranges = control_boundaries[control]
+                self.control_range[control][0] = control_ranges[0]
+                self.control_range[control][1] = control_ranges[1]
+        else:
+            for state in range(0,self.state_range.shape[0]):
+                self.state_range[state][0] = -1.0
+                self.state_range[state][1] = 1.0
+            for control in range(0,self.control_range.shape[0]):
+                self.control_range[control][0] = -1.0
+                self.control_range[control][1] = 1.0  
 
         self.num_chunks = self.ic_samples // self.chunk_size 
 
@@ -121,8 +130,9 @@ class CollocationPointsDataset(InitialCondtionsDataset):
                  n_states: int = 3, 
                  n_control: int = 1, 
                  horizon_T: float = 0.5, 
-                 pre_generate: bool = True) -> None:
-        super().__init__(state_boundaries, control_boundaries, ic_samples, chunk_size, n_states, n_control, horizon_T, pre_generate=False)
+                 pre_generate: bool = True,
+                 normalized: bool = True) -> None:
+        super().__init__(state_boundaries, control_boundaries, ic_samples, chunk_size, n_states, n_control, horizon_T, pre_generate=False, normalized=normalized)
 
         if pre_generate:
             # Pre-generate the pool: (collocation_samples, 1 + n_states + n_control)
@@ -196,7 +206,7 @@ class ExperimentDataDataset(Dataset):
         }
 
 
-class PINNDataModule(L.LightningDataModule):
+class PINNDataModule(pl.LightningDataModule):
     def __init__(self,data_path:Mapping[str,Union[str, Path]],
                  n_states:int,
                  n_control:int,
@@ -252,6 +262,7 @@ class PINNDataModule(L.LightningDataModule):
         self.num_workers:int = num_workers
         self.device:str = device
         self.pre_generate:bool = pre_generate
+        self.normalized:bool = False
 
     def setup(self, stage: Optional[str] = None) -> None:
         train = self.data.get("train")
@@ -308,22 +319,37 @@ class PINNDataModule(L.LightningDataModule):
                     locals()[f"{key}_data_torch"] += noise
         
         # Experiment datasets
-        self.exp_train_ds = ExperimentDataDataset(train_data_torch, self.n_states["train"], 
-                                                  self.n_control["train"], self.horizon_T,self.dt)
-        self.exp_val_ds = ExperimentDataDataset(valid_data_torch, self.n_states["valid"], 
-                                                self.n_control["valid"], self.horizon_T,self.dt)
-        self.exp_test_ds = ExperimentDataDataset(test_data_torch, self.n_states["test"], 
-                                                 self.n_control["test"], self.horizon_T,self.dt)
+        self.exp_train_ds = ExperimentDataDataset(train_data_torch, 
+                                                  self.n_states["train"], 
+                                                  self.n_control["train"], 
+                                                  self.horizon_T,self.dt)
+        self.exp_val_ds = ExperimentDataDataset(valid_data_torch, 
+                                                self.n_states["valid"], 
+                                                self.n_control["valid"], 
+                                                self.horizon_T,self.dt)
+        self.exp_test_ds = ExperimentDataDataset(test_data_torch, 
+                                                 self.n_states["test"], 
+                                                 self.n_control["test"], 
+                                                 self.horizon_T,self.dt)
         
         # Physics-informed datasets for training only
-        self.ic_train_ds = InitialCondtionsDataset(self.state_boundaries, self.control_boundaries, 
+        self.ic_train_ds = InitialCondtionsDataset(self.state_boundaries, 
+                                                   self.control_boundaries, 
                                                    self.ic_samples, self.chunk_size_ic, 
-                                                   self.n_states["train"], self.n_control["train"], 
-                                                   self.horizon_T, pre_generate=self.pre_generate)
-        self.coll_train_ds = CollocationPointsDataset(self.state_boundaries, self.control_boundaries, 
-                                                      self.physics_samples, self.chunk_size_physics, 
-                                                      self.n_states["train"], self.n_control["train"], 
-                                                      self.horizon_T, pre_generate=self.pre_generate)
+                                                   self.n_states["train"], 
+                                                   self.n_control["train"], 
+                                                   self.horizon_T, 
+                                                   pre_generate=self.pre_generate,
+                                                   normalized=True)
+        self.coll_train_ds = CollocationPointsDataset(self.state_boundaries, 
+                                                      self.control_boundaries, 
+                                                      self.physics_samples, 
+                                                      self.chunk_size_physics, 
+                                                      self.n_states["train"], 
+                                                      self.n_control["train"], 
+                                                      self.horizon_T, 
+                                                      pre_generate=self.pre_generate,
+                                                      normalized=True)
         
         # Val and test: only experiment data
         self.val_ds = self.exp_val_ds
@@ -393,7 +419,18 @@ class PINNDataModule(L.LightningDataModule):
             else:
                 raise Exception("Unsupported type")
     
-
+    def normalize_states(self,key:str):
+        ##assumes tyu format
+        i, j = 0, 0
+        for idx in range(1,1+self.n_states[key]):
+            nrng = self.state_boundaries[i]
+            i += 1
+            self.data[key][:,idx] = PINNDataModule.normalize(self.data[key][:,idx],nrng=nrng)
+        for idx in range(1+self.n_states[key],1+self.n_states[key]+self.n_control[key]):
+            nrng = self.control_boundaries[j]
+            j += 1 
+            self.data[key][:,idx] = PINNDataModule.normalize(self.data[key][:,idx],nrng=nrng) 
+    
     def clip_samples(self,type, range:tuple[float,float]=(0.,1.)):
         num_samples = self.data[type][:,0].size
         beg_idx = int(range[0]*num_samples)
